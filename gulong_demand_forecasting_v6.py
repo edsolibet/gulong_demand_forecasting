@@ -977,7 +977,6 @@ if __name__ == '__main__':
     df_sku_demand, sku_demand_dict = main_sku_training(df_trans, month = fcast_month, fcast_steps = fcast_steps)
     
     # calculate forecasts for all SKU
-    for sku in df_sku_demand.index:
         
     
     
