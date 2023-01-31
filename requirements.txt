@@ -1,0 +1,12 @@
+openpyxl
+streamlit
+requests
+matplotlib
+plotly
+seaborn
+xgboost
+prophet
+sklearn
+streamlit-aggrid
+numpy
+pandas
