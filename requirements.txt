@@ -10,3 +10,4 @@ scikit-learn
 streamlit-aggrid
 numpy
 pandas
+statsmodels
