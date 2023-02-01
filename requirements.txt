@@ -6,7 +6,7 @@ plotly
 seaborn
 xgboost
 prophet
-sklearn
+scikit-learn
 streamlit-aggrid
 numpy
 pandas
