@@ -6,282 +6,72 @@ Created on Mon Jan 23 13:07:05 2023
 """
 import pandas as pd
 import numpy as np
-import re, string, os
+
 # for importing data
-import openpyxl, requests
-from io import BytesIO
+from import_data_redash import import_txn_data, import_traffic_data
+
 # handling dates
 import datetime as dt
-from datetime import date, datetime
-from datetime import timedelta
-from dateutil.relativedelta import relativedelta
+from datetime import datetime
+from calendar import monthrange
 
 # plots
-import matplotlib.pyplot as plt
-import seaborn as sns
-import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.express as px
 
 # models and metrics
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error
+from statsmodels.tsa.holtwinters import Holt
+
 from xgboost import XGBClassifier, XGBRegressor
 from prophet import Prophet
-from sklearn.linear_model import LogisticRegressionCV
-from sklearn.linear_model import LinearRegression
-from statsmodels.tsa.holtwinters import SimpleExpSmoothing, Holt
-from sklearn.metrics import confusion_matrix, recall_score, precision_score
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.model_selection import RepeatedStratifiedKFold
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc, precision_recall_curve,roc_curve
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from calendar import monthrange
 
 # streamlit
 import streamlit as st
-from st_aggrid import GridOptionsBuilder, AgGrid
-
-import seaborn as sns
-import matplotlib.pyplot as plt
+#from st_aggrid import GridOptionsBuilder, AgGrid
 
 import warnings
 warnings.filterwarnings(action='ignore', category=UserWarning)
 warnings.filterwarnings(action='ignore', category=FutureWarning)
 #warnings.filterwarnings(action='ignore', category=ValueWarning)
 
-def remove_emoji(text):
-    '''
-    REMOVE EMOJIS FROM STRINGS
-    '''
-    emoj = re.compile("["
-        u"\U0001F600-\U0001F64F"  # emoticons
-        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
-        u"\U0001F680-\U0001F6FF"  # transport & map symbols
-        u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
-        u"\U00002500-\U00002BEF"  # chinese char
-        u"\U00002702-\U000027B0"
-        u"\U00002702-\U000027B0"
-        u"\U000024C2-\U0001F251"
-        u"\U0001f926-\U0001f937"
-        u"\U00010000-\U0010ffff"
-        u"\u2640-\u2642" 
-        u"\u2600-\u2B55"
-        u"\u200d"
-        u"\u23cf"
-        u"\u23e9"
-        u"\u231a"
-        u"\ufe0f"  # dingbats
-        u"\u3030"
-                      "]+", re.UNICODE)
-    return re.sub(emoj, ' ', text).strip()
-
-
-def fix_name(name):
-    '''
-    Fix names which are duplicated.
-    Ex. "John Smith John Smith"
-    
-    Parameters:
-    -----------
-    name: str
-      
-    Returns:
-    --------
-    fixed name; str
-    
-    '''
-    name_corrections = {'MERCEDESBENZ' : 'MERCEDES-BENZ',
-                        'MERCEDES BENZ' : 'MERCEDES-BENZ',
-                        'IXSFORALL INC.' : 'Marvin Mendoza (iXSforAll Inc.)',
-                        'GEMPESAWMENDOZA' : 'GEMPESAW-MENDOZA',
-                        'MIKE ROLAND HELBES' : 'MIKE HELBES'}
-    name_list = list()
-    # removes emojis and ascii characters (i.e. chinese chars)
-    name = remove_emoji(name).encode('ascii', 'ignore').decode()
-    # split name by spaces
-    for n in name.split(' '):
-      if n not in name_list:
-      # check each character for punctuations minus '.' and ','
-          name_list.append(''.join([ch for ch in n 
-                                  if ch not in string.punctuation.replace('.', '')]))
-      else:
-          continue
-    name_ = ' '.join(name_list).strip().upper()
-    for corr in name_corrections.keys():
-        if re.search(corr, name_):
-            name_ = name_corrections[re.search(corr, name_)[0]]
-        else:
-            continue
-    return name_.strip().title()
-
-def cleanup_specs(specs, col):
-    '''
-    Parameters
-    ----------
-    specs : string
-        String to obtain specs info
-    col : string
-        Column name to apply function ('width', 'aspect_ratio', 'diameter')
-
-    Returns
-    -------
-    specs : string
-        Corresponding string value in specs to "col"
-
-    '''
-    specs_len = len(specs.split('/'))
-    if specs_len == 1:
-        return specs.split('/')[0]
-    else:
-        if col == 'width':
-            return specs.split('/')[0]
-        elif col == 'aspect_ratio':
-            ar = specs.split('/')[1]
-            if ar == '0' or ar == '':
-                return 'R'
-            else:
-                return ar
-        elif col == 'diameter':
-            try:
-                diameter = re.search('(?<=R)?[0-9]{2}', specs.split('/')[2])[0]
-                return diameter
-            except:
-                return specs.split('/')[2]
-        else:
-            return specs
-
-def combine_specs(row):
-    '''
-    Helper function to join corrected specs info
-
-    Parameters
-    ----------
-    row : dataframe row
-        From gogulong dataframe
-    Returns
-    -------
-    string
-        joined corrected specs info
-
-    '''       
-    if '.' in str(row['aspect_ratio']):
-        return '/'.join([str(row['width']), str(float(row['aspect_ratio'])), str(row['diameter'])])
-    else:
-        return '/'.join([str(row['width']), str(row['aspect_ratio']), str(row['diameter'])])
-
 @st.experimental_memo
 def import_data():
     '''
-    IMPORT DATA FROM REDASH QUERY FOR GULONG
+    Wrapper function for importing data from redash so that caching can be applied.
     '''
-    # Transactions data
-    gulong_txns_redash = "http://app.redash.licagroup.ph/api/queries/104/results.csv?api_key=YqUI9o2bQn7lQUjlRd9gihjgAhs8ls1EBdYNixaO"
-    df_txns_ = pd.read_csv(gulong_txns_redash , parse_dates = ['date'])
-    # filter rows: include fulfilled, cancelled (via gulong due to no available stock/prod not available)
-    df_txns_ = df_txns_[(df_txns_.status == 'fulfilled') | \
-                        ((df_txns_.status == 'cancelled') & \
-                         (df_txns_.cancel_type == 'gulong cancellation') & 
-                         df_txns_.reason.isin(['no available stock', 
-                                               'product not available']))]
-    # filter by active brands
-    active_brands = ['BRIDGESTONE', 'DUNLOP', 'GOODYEAR', 'MICHELIN', 'BFGOODRICH',
-                     'MAXXIS', 'NEXEN', 'NITTO', 'TOYO', 'YOKOHAMA', 'ALLIANCE',
-                     'ARIVO', 'DOUBLECOIN', 'TORQUE', 'WANLI', 'COOPER', 'CST',
-                     'PRESA']
-    
-    df_txns_ = df_txns_[df_txns_.make.isin(active_brands)]
-    
-    # drop duplicates
-    # exclude ID since some transactions have different IDs but same information
-    df_txns_ = df_txns_.drop_duplicates(subset= ['date', 'name', 'make', 'cost'], keep='first')
-    
-    # cleanup columns
-    #df_txns_.loc[:, 'date'] = df_txns_.loc[:,'date'].dt.date
-    df_txns_.loc[:, 'name'] = df_txns_.apply(lambda x: fix_name(x['name']), axis=1)
-    df_txns_.loc[:, 'width'] = df_txns_.apply(lambda x: cleanup_specs(x['dimensions'], 'width'), axis=1)
-    df_txns_.loc[:, 'aspect_ratio'] = df_txns_.apply(lambda x: cleanup_specs(x['dimensions'], 'aspect_ratio'), axis=1)
-    df_txns_.loc[:, 'diameter'] = df_txns_.apply(lambda x: cleanup_specs(x['dimensions'], 'diameter'), axis=1)
-    df_txns_.loc[:, 'dimensions'] = df_txns_.apply(lambda x: combine_specs(x), axis=1)
-    df_txns_.loc[:, 'year-month'] = df_txns_.apply(lambda x: '-'.join([str(x['date'].year), str(x['date'].month).zfill(2), '01']), axis=1)
-    # filter based on dimension values
-    df_txns_ = df_txns_[df_txns_.width.apply(lambda x: 1 if float(re.search('[\d\.]*', x)[0]) < 400 else 0) == 1]
-    df_txns_ = df_txns_[(df_txns_.aspect_ratio == 'R') | \
-                        (df_txns_[df_txns_.aspect_ratio != 'R'].aspect_ratio\
-                         .apply(lambda x : 1 if float(x) > 10 else 0) == 1)]
-    df_txns_ = df_txns_[df_txns_.diameter.apply(lambda x: 1 if x.isnumeric() else 0) == 1]
-    return df_txns_
-
-def ratio(a, b):
-    '''
-    Function for calculating ratios to avoid inf
-    '''
-    return a/b if b else 0 
+    df_trans = import_txn_data()
+    df_traffic = import_traffic_data()
+    return df_trans, df_traffic
 
 @st.experimental_memo
-def import_traffic_data():
+def get_fcast_month(date_today):
+    '''
+    Returns the month to be forecasted based on current day
+    Format: YYYY-MM-01
+    Requires import datetime as dt
+    from datetime import timedelta
     
-    # Website/Traffic ads
-    sheet_id = "17Yb2nYaf_0KHQ1dZBGBJkXDcpdht5aGE"
-    sheet_name = 'summary'
-    url = "https://docs.google.com/spreadsheets/export?exportFormat=xlsx&id=" + sheet_id
-    res = requests.get(url)
-    data = BytesIO(res.content)
-    xlsx = openpyxl.load_workbook(filename=data)
-    df_traffic = pd.read_excel(data, sheet_name = sheet_name)
+    Parameters
+    ----------
+    date_today: datetime
     
-    # daily traffic
-    df_traffic = df_traffic.dropna(axis=1)
-    df_traffic = df_traffic.rename(columns={'Unnamed: 0': 'date'})
-    clicks_cols = ['link_clicks_ga', 'link_clicks_fb']
-    impressions_cols = ['impressions_ga', 'impressions_fb']
-    df_traffic.loc[:,'year-month'] = df_traffic.apply(lambda x: '-'.join([str(x['date'].year), str(x['date'].month).zfill(2)]), axis=1)
-    df_traffic.loc[:, 'clicks_total'] = df_traffic.loc[:,clicks_cols].sum(axis=1)
-    df_traffic.loc[:, 'impressions_total'] = df_traffic.loc[:,impressions_cols].sum(axis=1)
-    df_traffic.loc[:, 'signups_total'] = df_traffic.loc[:,'signups_ga'] + df_traffic.loc[:, 'signups_backend']
-    df_traffic.loc[:, 'ctr_ga'] = df_traffic.apply(lambda x: ratio(x['link_clicks_ga'], x['impressions_ga']), axis=1)
-    df_traffic.loc[:, 'ctr_fb'] = df_traffic.apply(lambda x: ratio(x['link_clicks_fb'], x['impressions_fb']), axis=1)
-    df_traffic.loc[:, 'ctr_total'] = df_traffic.apply(lambda x: ratio(x['clicks_total'], x['impressions_total']), axis=1)
-    df_traffic.loc[:, 'ad_costs_total'] = df_traffic.loc[:, 'ad_costs_ga'] + df_traffic.loc[:, 'ad_costs_fb_total']
-    
-    purchases_backend_cols = [col for col in df_traffic.columns if 'purchases_backend' in col]
-    df_traffic.loc[:, 'purchases_backend_total'] = df_traffic.loc[:,purchases_backend_cols].sum(axis=1)
-    df_traffic.loc[:, 'purchases_backend_marketplace'] = df_traffic.loc[:, 'purchases_backend_fb'] + df_traffic.loc[:, 'purchases_backend_shopee'] + df_traffic.loc[:, 'purchases_backend_lazada']
-    df_traffic.loc[:, 'purchases_backend_b2b'] = df_traffic.loc[:, 'purchases_backend_b2b'] + df_traffic.loc[:, 'purchases_backend_walk-in']
-    df_traffic.drop(labels = ['purchases_backend_shopee', 'purchases_backend_lazada', 
-                                 'purchases_backend_fb', 'purchases_backend_walk-in', 
-                                 'purchases_backend_nan'], axis=1, inplace=True)
-    return df_traffic
-
-def eval_model(train, actual_train, test, actual_test):
-    residuals = train - actual_train
-    
-    print ('Residuals check:')
-    print (f'Residuals mean = {np.round(np.mean(residuals), 3)}')
-    
-    residuals_x = np.array(range(len(residuals))).reshape(-1,1)
-    residuals_y = residuals.values.reshape(-1, 1)
-    residual_lin_reg = LinearRegression()
-    residual_lin_reg.fit(residuals_x, residuals_y)
-    R2 = residual_lin_reg.score(residuals_x, residuals_y)
-    print (f'Residuals correlation = {np.round(R2, 3)}')
-    
-    print ('Forecast Errors')
-    # MAE:
-    MAE = mean_absolute_error(actual_test, test)
-    print (f'MAE =  {np.round(MAE, 3)}')
-    
-    # RMSE
-    RMSE = np.sqrt(mean_squared_error(actual_test, test))
-    print (f'RMSE = {np.round(RMSE,3)}')
-    
-def weighted_residuals(series):
-    series_len = len(series)
-    wts = np.exp(-1*(series_len - 1 - np.array(range(series_len)))/series_len)
-    weighted_series = pd.Series(series * wts)
-    return weighted_series
+    '''
+    if date_today.day < 15:
+        # get first day of current month
+        fcast_month = date_today.replace(day=1).strftime('%Y-%m-%d')
+    else:
+        # get first day of next month
+        # advance day to any number more than any month then get first day of that month
+        fcast_month = (date_today.replace(day=1) + dt.timedelta(days=32)).replace(day=1).strftime('%Y-%m-%d')
+    return fcast_month
 
 def naive_forecast(train):
     '''
+    Helper function to implement naive_forecast given 1D series data
 
     Parameters
     ----------
@@ -290,7 +80,7 @@ def naive_forecast(train):
     Returns
     -------
     - forecasted values for train data
-    - 1-step out of sample forecast
+    - 1-step forecast
 
     '''
     train_fit = train.shift().bfill()
@@ -298,8 +88,28 @@ def naive_forecast(train):
     
     return train_fit, forecast
 
+def weighted_residuals(series):
+    '''
+    Calculate exponential weights (larger value for more recent) for input series
+    Used by mean_forecast function
+    
+    Parameters
+    ----------
+    series: pandas series
+    
+    Returns
+    -------
+    weighted_series: pandas series of exponential weights
+    '''
+    series_len = len(series)
+    wts = np.exp(-1*(series_len - 1 - np.array(range(series_len)))/series_len)
+    weighted_series = pd.Series(series * wts)
+    
+    return weighted_series
+
 def mean_forecast(train):
     '''
+    Helper function to implement exponentially-weighted mean forecast
 
     Parameters
     ----------
@@ -308,7 +118,7 @@ def mean_forecast(train):
     Returns
     -------
     - forecasted values for train data
-    - 1-step out of sample forecast
+    - 1-step forecast
 
     '''
     train_fit = pd.Series([weighted_residuals(train).mean()] * len(train))
@@ -318,45 +128,74 @@ def mean_forecast(train):
 
 def poly_forecast(y_train, deg = 3):
     '''
+    Helper function to implement polynomial fitting and forecast
 
     Parameters
     ----------
     y_train : pandas series
-    deg : polynomial degree
+    deg : int, polynomial degree (optional)
+        if provided, polynomial will use input degree;
+        if None, automatically calculate degree with lowest RMSE
 
     Returns
     -------
     - forecasted values for train data
-    - 1-step out of sample forecast
+    - 1-step forecast
 
     '''
     
     def poly_pipeline(x_train, y_train, deg):
-        polynomial_converter = PolynomialFeatures(degree = d, 
+        '''
+        Pipeline for transforming series data and training model
+        '''
+        polynomial_converter = PolynomialFeatures(degree = deg, 
                                                   interaction_only = False, 
                                                   include_bias=False)
         poly_features = polynomial_converter.fit_transform(x_train.array.reshape(-1,1))
         model = LinearRegression(fit_intercept = True)
         model.fit(poly_features, y_train)
+        
         return model, poly_features, polynomial_converter
-    
     
     x_train = pd.Series(range(len(y_train)))
     x_test = [x_train.iloc[-1] + 1]
-    rmse_ = list()
-    for d in range(1, 6):
-        model, poly_features, polynomial_converter = poly_pipeline(x_train, y_train, deg = d)
     
-        train_fit = pd.Series(model.predict(poly_features))
-        rmse_.append(np.sqrt(mean_squared_error(y_train, train_fit)))
+    if deg is None:
+        rmse_ = list()
+        for d in range(1, 6):
+            # create polynomial regression requirements
+            model, poly_features, polynomial_converter = poly_pipeline(x_train, y_train, deg = d)
+            # polynomial predictions for training data
+            train_fit = pd.Series(model.predict(poly_features))
+            rmse_.append(np.sqrt(mean_squared_error(y_train, train_fit)))
+         
+        # determine optimal degree
+        opt_deg = rmse_[rmse_.index(min(rmse_))]
+        
+    else:
+        opt_deg = deg
+        
+    model, poly_features, polynomial_converter = poly_pipeline(x_train, y_train, deg = opt_deg)
+    train_fit = pd.Series(model.predict(poly_features))
+    forecast = model.predict(polynomial_converter.transform([x_test]))[0]
     
-    # determine optimal degree
-    opt_deg = rmse_[rmse_.index(min(rmse_))]
-    opt_model, opt_poly_features, polynomial_converter = poly_pipeline(x_train, y_train, deg = opt_deg)
-    forecast = opt_model.predict(polynomial_converter.transform([x_test]))[0]
     return train_fit, forecast
 
 def linear_forecast(y_train):
+    '''
+    Helper function to implement linear regression fitting and forecast
+    
+    Parameters
+    ----------
+    y_train : pandas series
+    
+    Returns
+    -------
+    - forecasted values for train data
+    - 1-step forecast
+    
+    '''
+    
     x_train = pd.Series(range(len(y_train)))
     x_test = [x_train.iloc[-1] + 1]
     lin_reg = LinearRegression(fit_intercept = True)
@@ -364,10 +203,13 @@ def linear_forecast(y_train):
     
     train_fit = lin_reg.predict(x_train.array.reshape(-1,1)).flatten()
     forecast = lin_reg.predict([x_test])[0]
+    
     return train_fit, forecast    
 
 def holt_forecast(y_train):
     '''
+    Helper to implement holt exponential smoothing to forecast
+    
     parameters to extract from model:
         smoothing_level
         smoothing_trend
@@ -375,15 +217,12 @@ def holt_forecast(y_train):
 
     Parameters
     ----------
-    x_train : pandas series
     y_train : pandas series
-    x_test : pandas series
-    deg : polynomial degree
 
     Returns
     -------
     - forecasted values for train data
-    - 1-step out of sample forecast
+    - 1-step forecast
 
     '''
     model_holt = Holt(y_train, damped_trend = True).fit(optimized = True)
@@ -391,44 +230,23 @@ def holt_forecast(y_train):
     train_fit = model_holt.fittedfcast[:-1]
     return train_fit, forecast
 
-# time series cross-validation
-def time_series_cv(data, start_len):
-    '''
-    Calculates the RMSE for a model under time series cross validation method
-    Forecast step = 1
-    
-    Parameters
-    ----------
-    data : Pandas Series
-    start_len: int
-        starting length of training/estimation data
-    
-    Returns
-    -------
-    np.mean(RMSE_list) : mean of RMSE for each step
-    
-    '''
-    RMSE_list = list()
-    for i in range((len(data) - start_len)):
-        start_train, fcast = mean_forecast(data.iloc[:start_len + i])
-        RMSE_list.append(np.sqrt(mean_squared_error([data.iloc[start_len + i]], [fcast])))
-        
-    return np.mean(RMSE_list)
-
 def interval_score(df_pred, alpha):
     '''
+    Calculates interval score of model given upper and lower bands, confidence level alpha
+    Interval score = upper - lower + 2/alpha * (lower - x)I(x < lower) + 2/alpha * (x - upper)I(x > upper)
+    
     Parameters
     ----------
     df_pred : pandas dataframe
         dataframe of lower and upper prediction interval of forecast
-        index is the model used
+        index is the models used
         first row is true value
     alpha : confidence interval
         0.8, 0.9, etc
         
     Returns
     -------
-    Series of interval score for each method
+    interval_score : Series of interval score for each method
     
     '''
     lower = df_pred.iloc[:, 0]
@@ -437,17 +255,20 @@ def interval_score(df_pred, alpha):
     interval_range = upper - lower
     lower_penalty = lower.apply(lambda x: (2/alpha) * (x - val) if val < x else 0)
     upper_penalty = upper.apply(lambda x: (2/alpha) * (val - x) if val > x else 0)
-    return (interval_range + lower_penalty + upper_penalty)/interval_range
+    int_score = (interval_range + lower_penalty + upper_penalty)/interval_range
+    
+    return int_score
 
-def weighted_average(row, weights):
+def weighted_average(row):
     '''
     To be used in pandas apply
     weights is a pandas Series of weights
     '''
+    weights = np.array(range(1, len(row) + 1))
+    
     return (row * weights).sum()/weights.sum()
 
-
-def eval_model_forecast(data, fcast_steps = 4, month = None):
+def eval_model_forecast(data, fcast_steps = 4, month = None, alpha = 80):
     '''
     Parameters
     ----------
@@ -457,6 +278,8 @@ def eval_model_forecast(data, fcast_steps = 4, month = None):
         Series of train data values
     fcast_steps: int
         Number of forecast steps
+    alpha: int
+        confidence coefficient of forecast bounds
     
     Returns
     -------
@@ -465,12 +288,11 @@ def eval_model_forecast(data, fcast_steps = 4, month = None):
     
     '''
     # prediction interval multiplier
-    PIM = {'70': 1.04,
-           '75': 1.15,
-           '80': 1.28,
-           '90': 1.64}
+    PIM = {70: 1.04,
+           75: 1.15,
+           80: 1.28,
+           90: 1.64}
     
-    mult = '80'
     naive_RMSE, mean_RMSE, poly_RMSE, holt_RMSE = list(), list(), list(), list()
     naive_pred, mean_pred, poly_pred, holt_pred, y_true = list(), list(), list(), list(), list()
     
@@ -479,11 +301,7 @@ def eval_model_forecast(data, fcast_steps = 4, month = None):
         train_indexer = -1*(fcast_steps - step - 1) if step != (fcast_steps - 1) else None
         
         y_train = data.loc[:month].iloc[:-1].iloc[:train_indexer]
-        x_train = pd.Series(range(len(y_train)))
-        
-        #y_test = [data.iloc[train_len + step]]
-        y_test = [data.loc[:month].iloc[len(y_train)]]
-        x_test = [x_train.iloc[-1] + 1]
+        y_test = [data.iloc[len(y_train)]]
         y_true.append(y_test[0])
         y_true.append(y_test[0])
         
@@ -491,28 +309,28 @@ def eval_model_forecast(data, fcast_steps = 4, month = None):
         naive_train, naive_fcast = naive_forecast(y_train)
         naive_res = weighted_residuals(pd.Series(naive_train.values) - pd.Series(y_train.values))
         naive_RMSE.append(np.sqrt(mean_squared_error(y_test, [naive_fcast])))
-        naive_pred.append(int(np.abs(naive_fcast - PIM[mult]*naive_res.std() if PIM[mult]*naive_res.std() < naive_fcast else 0)))
-        naive_pred.append(int(np.abs(naive_fcast + PIM[mult]*naive_res.std())))
+        naive_pred.append(int(np.abs(naive_fcast - PIM[alpha]*naive_res.std() if PIM[alpha]*naive_res.std() < naive_fcast else 0)))
+        naive_pred.append(int(np.abs(naive_fcast + PIM[alpha]*naive_res.std())))
         
         # mean
         mean_train, mean_fcast = mean_forecast(y_train)
         mean_res = weighted_residuals(pd.Series(mean_train.values) - pd.Series(y_train.values))
         mean_RMSE.append(np.sqrt(mean_squared_error(y_test, [mean_fcast])))
-        mean_pred.append(int(np.abs(mean_fcast - PIM[mult]*mean_res.std() if PIM[mult]*mean_res.std() < mean_fcast else 0)))
-        mean_pred.append(int(np.abs(mean_fcast + PIM[mult]*mean_res.std())))
+        mean_pred.append(int(np.abs(mean_fcast - PIM[alpha]*mean_res.std() if PIM[alpha]*mean_res.std() < mean_fcast else 0)))
+        mean_pred.append(int(np.abs(mean_fcast + PIM[alpha]*mean_res.std())))
         
         # polynomial
-        poly_train, poly_fcast = poly_forecast(y_train, deg = 4)
+        poly_train, poly_fcast = poly_forecast(y_train)
         poly_res = weighted_residuals(pd.Series(poly_train.values) - pd.Series(y_train.values))
-        poly_pred.append(int(np.abs(poly_fcast - PIM[mult]*poly_res.std() if PIM[mult]*poly_res.std() < poly_fcast else 0)))
-        poly_pred.append(int(np.abs(poly_fcast + PIM[mult]*poly_res.std())))
+        poly_pred.append(int(np.abs(poly_fcast - PIM[alpha]*poly_res.std() if PIM[alpha]*poly_res.std() < poly_fcast else 0)))
+        poly_pred.append(int(np.abs(poly_fcast + PIM[alpha]*poly_res.std())))
         poly_RMSE.append(np.sqrt(mean_squared_error(y_test, [poly_fcast])))
         
         # holt
         holt_train, holt_fcast = holt_forecast(y_train)
         holt_res = weighted_residuals(holt_train - pd.Series(y_train.values))
-        holt_pred.append(int(np.abs(holt_fcast - PIM[mult]*holt_res.std() if PIM[mult]*holt_res.std() < holt_fcast else 0)))
-        holt_pred.append(int(np.abs(holt_fcast + PIM[mult]*holt_res.std())))
+        holt_pred.append(int(np.abs(holt_fcast - PIM[alpha]*holt_res.std() if PIM[alpha]*holt_res.std() < holt_fcast else 0)))
+        holt_pred.append(int(np.abs(holt_fcast + PIM[alpha]*holt_res.std())))
         holt_RMSE.append(np.sqrt(mean_squared_error(y_test, [holt_fcast])))
     
     # df_RMSE
@@ -525,7 +343,7 @@ def eval_model_forecast(data, fcast_steps = 4, month = None):
                          pd.Series(mean_RMSE), 
                          pd.Series(poly_RMSE),
                          pd.Series(holt_RMSE)], axis = 1).T
-    df_RMSE.columns = [f'{d}_RMSE' for d in y_train.iloc[-fcast_steps:].index] + ['avg_RMSE']
+    df_RMSE.columns = [f'{d}_RMSE' for d in data.iloc[-fcast_steps:].index] + ['avg_RMSE']
     df_RMSE.index = ['naive', 'mean', 'poly', 'holt']
     
     # create df_pred
@@ -534,59 +352,90 @@ def eval_model_forecast(data, fcast_steps = 4, month = None):
                          pd.Series(mean_pred), 
                          pd.Series(poly_pred),
                          pd.Series(holt_pred)], axis=1).T
-    pred_cols = [[f'{d}_lower', f'{d}_upper'] for d in y_train.iloc[-fcast_steps:].index]
+    pred_cols = [[f'{d}_lower', f'{d}_upper'] for d in data.iloc[-fcast_steps:].index]
     df_pred.columns = [item for sublist in pred_cols for item in sublist]
     df_pred.index = ['true', 'naive', 'mean', 'poly', 'holt']
     
-    # interval scoring
-    weights = pd.Series(list(range(1,fcast_steps+1)))
-    df_interval_score = pd.concat([interval_score(df_pred.iloc[:,2*step:2*(step+1)], int(mult)/100) for step in range(fcast_steps)], axis=1)
-    df_interval_score['avg_interval_score'] = df_interval_score.apply(lambda x: weighted_average(x, weights), axis=1)
+    # calculate interval scoring
+    df_interval_score = pd.concat([interval_score(df_pred.iloc[:,2*step:2*(step+1)], 
+                                                  int(alpha)/100) for step in range(fcast_steps)], axis=1)
+    df_interval_score['avg_interval_score'] = df_interval_score.apply(lambda x: weighted_average(x), axis=1)
     return df_RMSE, df_pred, df_interval_score
 
-def model_forecast(data, model, month = None):
+@st.experimental_memo
+def main_sku_training(data, month = None, fcast_steps = 6):
     '''
+    Model training and selection based on one-step forecasting for each SKU
+    
     Parameters
     ----------
     data : dataframe
-    
-    model: str
-    
+        df_trans from import_data
+    index : Index object
+        monthly_index
+        
     Returns
     -------
+    
+    sku_demand_limits : dataframe
+        dataframe containing info on training RMSE, predictions, interval_score, best_model
+    
     '''
-    
-    # prediction interval multiplier
-    PIM = {'70': 1.04,
-           '75': 1.15,
-           '80': 1.28,
-           '90': 1.64}
-    
-    mult = '80'
-    
-    model_ = {'naive' : naive_forecast,
-              'mean': mean_forecast,
-              'poly': poly_forecast,
-              'holt': holt_forecast}
-    
-    if month != None:
-        if month in data.index:
-            y_train = data.loc[:month].iloc[:-1]
+    if month is not None:
+        if month in data['year-month'].unique():
+            month_format = data.groupby('year-month')['quantity'].sum().loc[:month].iloc[:-1]
         else:
-            y_train = data
+            month_format = data.groupby('year-month')['quantity'].sum().loc[:month]
     else:
-        y_train = data
+        month_format = data.groupby('year-month')['quantity'].sum()
+    
+    training_placeholder = st.empty()
+    sku_demand_dict, sku_limits = {}, {}
+    # streamlit show progress bar during training
+    with training_placeholder.container():
+        my_bar = st.progress(0)
+        # iterate over all SKU models
+        for model_ndx, model in enumerate(data.model.value_counts().index):
+            my_bar.progress(int((model_ndx+1)/(len(data.model.value_counts().index))*100))
+            print (model)
+            # filter SKU from data and get monthly quantity data
+            sku_data = data[data.model == model]
+            
+            # reindex to fill in month gaps
+            monthly_model_data = sku_data.groupby('year-month')['quantity'].sum().reindex_like(month_format).fillna(0).reset_index()['quantity']
+            monthly_model_data.index = month_format.index
+            
+            if month is not None:
+                if month in monthly_model_data.index:
+                    monthly_model_data = monthly_model_data.loc[:month].iloc[:-1]
+                else:
+                    monthly_model_data = monthly_model_data.loc[:month]
+            else:
+                pass
+            
+            # evaluate predictions of different models
+            df_RMSE, df_pred, df_interval_score = eval_model_forecast(monthly_model_data, fcast_steps = fcast_steps, month = month)
+            # get model with best interval score
+            min_int_score = df_interval_score['avg_interval_score'].iloc[1:].min()
+            df_interval_score.columns = list(monthly_model_data.iloc[-fcast_steps:].index) + ['avg_interval_score']
+            # get best model based on interval score (disregarding true)
+            best_model = df_interval_score.iloc[1:][df_interval_score['avg_interval_score'].iloc[1:] == min_int_score].index[0]
+            # get SKU info
+            model_info = sku_data[['make', 'dimensions']].iloc[0]
+            sku_limits[model] = pd.concat([model_info, df_pred.loc[best_model,:]], axis = 0)
+            # store data into dictionary
+            sku_demand_dict[model] = {'df_RMSE': df_RMSE,
+                                       'df_pred': df_pred,
+                                       'df_interval_score': df_interval_score,
+                                       'best_model': best_model}
+    
+    # empty placeholder contents
+    training_placeholder.empty()
         
-    x_train = pd.Series(range(len(y_train)))
+    # construct dataframe
+    df_sku_demand = pd.DataFrame.from_dict(sku_limits, orient = 'index')
     
-    train, fcast = model_[model](y_train)
-    train = pd.Series(train)
-    train.index = y_train.index
-    res = weighted_residuals(pd.Series(train).reindex_like(y_train) - y_train.values)
-    pred_lower = np.abs(fcast - PIM[mult]*res.std() if PIM[mult]*res.std() < fcast else 0)
-    pred_upper = np.abs(fcast + PIM[mult]*res.std() if PIM[mult]*res.std() < fcast else 0)
-    
-    return pred_lower, pred_upper
+    return df_sku_demand, sku_demand_dict
 
 def get_daily_avg(data):
     '''
@@ -631,13 +480,124 @@ def go_scat(name, x, y, c = None, dash = 'solid'):
                                         
     return go_fig
 
-def color_coding(row, best):
+
+def model_forecast(data, model, month = None, alpha = 80):
+    '''
+    Calculate 1-step forecast given training data and best model
     
-    return ['background-color:green'] * len(
-        row) if row.index == best else ['background-color:red'] * len(row)
+    Parameters
+    ----------
+    data : dataframe
+        monthly training data
+    model: str
+        best model as determined from interval scores
+    month : str
+        forecast month
+    alpha : str
+        
+    
+    Returns
+    -------
+    pred_lower, pred_upper: lower and upper prediction bounds by model
+    '''
+    
+    # prediction interval alphaiplier
+    PIM = {70: 1.04,
+           75: 1.15,
+           80: 1.28,
+           90: 1.64}
+    
+    model_ = {'naive' : naive_forecast,
+              'mean': mean_forecast,
+              'poly': poly_forecast,
+              'holt': holt_forecast}
+    
+    if month != None:
+        if month in data.index:
+            y_train = data.loc[:month].iloc[:-1]
+        else:
+            y_train = data
+    else:
+        y_train = data
+    
+    train, fcast = model_[model](y_train)
+    train = pd.Series(train)
+    train.index = y_train.index
+    res = weighted_residuals(pd.Series(train).reindex_like(y_train) - y_train.values)
+    pred_lower = np.abs(fcast - PIM[alpha]*res.std() if PIM[alpha]*res.std() < fcast else 0)
+    pred_upper = np.abs(fcast + PIM[alpha]*res.std() if PIM[alpha]*res.std() < fcast else 0)
+    
+    return pred_lower, pred_upper
 
 @st.experimental_memo
-def main_overall_forecast(data, month = None, fcast_steps = 4):
+def overall_sku_forecast(sku, data, sku_dict, month = None):
+    '''
+    Calculate overall monthly forecast from total SKU forecasts
+    
+    Parameters
+    ----------
+    sku : str
+        SKU to forecast
+    data: dataframe
+        df_trans
+    sku_dict: dictionary
+        sku_demand_dict
+    month: str
+        forecast month
+    
+    Returns
+    -------
+    fcast: tuple
+        lower and upper forecast bounds
+    
+    
+    '''
+    
+    if month is not None:
+        if month in data['year-month'].unique():
+            month_format = data.groupby('year-month')['quantity'].sum().loc[:month].iloc[:-1]
+        else:
+            month_format = data.groupby('year-month')['quantity'].sum().loc[:month]
+    else:
+        month_format = data.groupby('year-month')['quantity'].sum()
+    
+    sku_data = data[data.model == sku]
+    if month is not None:
+        monthly_model_data = sku_data.groupby('year-month')['quantity'].sum().loc[:month].iloc[:-1]
+    else:
+        monthly_model_data = sku_data.groupby('year-month')['quantity'].sum()
+    
+    # reindex to fill in month gaps
+    y_train = monthly_model_data.reindex_like(month_format).fillna(0).reset_index()['quantity']
+    y_train.index = month_format.index
+    fcast = model_forecast(y_train, sku_dict['best_model'], month = month)
+    return fcast
+
+def color_coding(row, best):
+    '''
+    Applies background color to row of best model in df_interval_score
+
+    Parameters
+    ----------
+    row : df_interval_score row
+        Need reset_index so best model column is not index
+    best : str
+        best model as determined from df_interval_score
+        obtained from sku_demand_dict
+
+    Returns
+    -------
+    list
+        list of background color for each cell in row
+        color depends on value of model
+
+    '''
+    
+    return ['background-color:green'] * len(
+        row) if row['index'] == best else ['background-color:white'] * len(row)
+
+@st.experimental_memo
+def main_overall_forecast(data, month = None, fcast_steps = 6):
     '''
     
     Parameters
@@ -658,6 +618,7 @@ def main_overall_forecast(data, month = None, fcast_steps = 4):
     # evaluate predictions of different models
     df_RMSE, df_pred, df_interval_score = eval_model_forecast(month_format, fcast_steps = fcast_steps, month = month)
     # get model with best interval score
+    # leave out columns
     min_int_score = df_interval_score['avg_interval_score'].iloc[1:].min()
     
     df_interval_score.columns = list(month_format.iloc[-fcast_steps:].index) + ['avg_interval_score']
@@ -713,95 +674,12 @@ def main_overall_forecast(data, month = None, fcast_steps = 4):
     with st.expander('Forecast details'):
         
         st.info('Forecast interval scores')
-        # st.dataframe(df_interval_score.fillna(0).style.\
-        #              apply(lambda x: color_coding(x, best_model), axis=1))
+        st.dataframe(df_interval_score.fillna(0).reset_index().style.\
+                      apply(lambda x: color_coding(x, best_model), axis=1))
         # reference: https://stackoverflow.com/questions/73940163/highlighting-specific-rows-in-streamlit-dataframe
-        st.dataframe(df_interval_score.fillna(0))
-    
-
-@st.experimental_memo
-def main_sku_training(data, month = None, fcast_steps = 4):
-    '''
-    Model training and selection based on one-step forecasting for each SKU
-    
-    Parameters
-    ----------
-    data : dataframe
-        df_trans from import_data
-    index : Index object
-        monthly_index
         
-    Returns
-    -------
-    
-    sku_demand_limits : dataframe
-        dataframe containing info on training RMSE, predictions, interval_score, best_model
-    
-    '''
-    if month is not None:
-        if month in data['year-month'].unique():
-            month_format = data.groupby('year-month')['quantity'].sum().loc[:month].iloc[:-1]
-        else:
-            month_format = data.groupby('year-month')['quantity'].sum().loc[:month]
-    else:
-        month_format = data.groupby('year-month')['quantity'].sum()
-        
-    sku_demand_dict, sku_limits = {}, {}
-    # iterate over all SKU models
-    for model in data.model.value_counts().index:
-        print(model)
-        # filter SKU from data and get monthly quantity data
-        sku_data = data[data.model == model]
-        if month is not None:
-            monthly_model_data = sku_data.groupby('year-month')['quantity'].sum().loc[:month].iloc[:-1]
-        else:
-            monthly_model_data = sku_data.groupby('year-month')['quantity'].sum()
-        
-        # reindex to fill in month gaps
-        monthly_model_data = monthly_model_data.reindex_like(month_format).fillna(0).reset_index()['quantity']
-        monthly_model_data.index = month_format.index
-        # evaluate predictions of different models
-        df_RMSE, df_pred, df_interval_score = eval_model_forecast(monthly_model_data, fcast_steps = fcast_steps, month = month)
-        # get model with best interval score
-        min_int_score = df_interval_score['avg_interval_score'].iloc[1:].min()
-        df_interval_score.columns = list(monthly_model_data.iloc[-fcast_steps:].index) + ['avg_interval_score']
-        # get best model based on interval score (disregarding true)
-        best_model = df_interval_score.iloc[1:][df_interval_score['avg_interval_score'].iloc[1:] == min_int_score].index[0]
-        # get SKU info
-        model_info = sku_data[['make', 'dimensions']].iloc[0]
-        sku_limits[model] = pd.concat([model_info, df_pred.loc[best_model,:]], axis = 0)
-        # store data into dictionary
-        sku_demand_dict[model] = {'df_RMSE': df_RMSE,
-                                   'df_pred': df_pred,
-                                   'df_interval_score': df_interval_score,
-                                   'best_model': best_model}
-    # construct dataframe
-    df_sku_demand = pd.DataFrame.from_dict(sku_limits, orient = 'index')
-    
-    return df_sku_demand, sku_demand_dict
-
-def overall_sku_forecast(sku, data, sku_dict, month = None):
-    if month is not None:
-        if month in data['year-month'].unique():
-            month_format = data.groupby('year-month')['quantity'].sum().loc[:month].iloc[:-1]
-        else:
-            month_format = data.groupby('year-month')['quantity'].sum().loc[:month]
-    else:
-        month_format = data.groupby('year-month')['quantity'].sum()
-    
-    sku_data = data[data.model == sku]
-    if month is not None:
-        monthly_model_data = sku_data.groupby('year-month')['quantity'].sum().loc[:month].iloc[:-1]
-    else:
-        monthly_model_data = sku_data.groupby('year-month')['quantity'].sum()
-    
-    # reindex to fill in month gaps
-    y_train = monthly_model_data.reindex_like(month_format).fillna(0).reset_index()['quantity']
-    y_train.index = month_format.index
-    fcast = model_forecast(y_train, sku_dict['best_model'], month = month)
     
     
-
 @st.experimental_memo
 def main_sku_forecast(sku, data, sku_dict, month = None):
     if month is not None:
@@ -871,10 +749,10 @@ def main_sku_forecast(sku, data, sku_dict, month = None):
     with st.expander('Forecast details'):
         
         st.info('Forecast interval scores')
-        # st.dataframe(df_interval_score.fillna(0).style.\
-        #              apply(lambda x: color_coding(x, best_model), axis=1))
+        st.dataframe(sku_dict['df_interval_score'].fillna(0).reset_index().style\
+                      .apply(lambda x: color_coding(x, sku_dict['best_model']), axis=1))
         # reference: https://stackoverflow.com/questions/73940163/highlighting-specific-rows-in-streamlit-dataframe
-        st.dataframe(sku_dict['df_interval_score'].fillna(0))
+        # st.dataframe(sku_dict['df_interval_score'].fillna(0))
     
 
 @st.experimental_memo
@@ -928,90 +806,163 @@ def main_forecast(data, model_dict, month = None):
     monthly_sku_forecast = pd.DataFrame.from_dict(sku_forecast, orient = 'index')
     return monthly_sku_forecast
 
-@st.experimental_memo
-def get_fcast_month(date_today):
-    '''
-    Returns the month to be forecasted based on current day
-    Format: YYYY-MM-01
-    Requires import datetime as dt
-    from datetime import timedelta
-    
-    Parameters
-    ----------
-    date_today: datetime
-    
-    '''
-    if date_today.day < 15:
-        # get first day of current month
-        fcast_month = date_today.replace(day=1).strftime('%Y-%m-%d')
-    else:
-        # get first day of next month
-        # advance day to any number more than any month then get first day of that month
-        fcast_month = (date_today.replace(day=1) + dt.timedelta(days=32)).replace(day=1).strftime('%Y-%m-%d')
-    return fcast_month
+
     
 
+## =========================== main flow ======================================
 if __name__ == '__main__':
     st.title('Gulong.ph Demand Forecasting App')
     
-    # import data
-    df_trans = import_data()
-    df_traffic = import_traffic_data()
-    
-    # construct main monthly dataframe
-    monthly_total_qty = df_trans.groupby('year-month')['quantity'].sum()
-    monthly_days = pd.Series([monthrange(*list(map(int, d.split('-')[:2])))[1] for d in monthly_total_qty.index])
+    # 1. import data
+    df_trans, df_traffic = import_data()
+
+    # 2. select forecast month and training steps
+    month_series = pd.Series(pd.date_range(df_trans.date.min().replace(day = 1), 
+                                            datetime.today(), freq = 'MS'))\
+                                            .dt.strftime('%Y-%m-%d').tolist()
+    monthly_days = pd.Series([monthrange(*list(map(int, d.split('-')[:2])))[1] for d in list(month_series)])
     ## monthly_index
-    monthly_days.index = monthly_total_qty.index
+    monthly_days.index = month_series
     
-    # select forecast month
-    date_today = datetime.today().date()
-    reco_fcast_month = get_fcast_month(date_today)
-    fcast_month_list = np.unique((list(monthly_total_qty.index) + [reco_fcast_month]))[::-1]
-    fcast_month = st.selectbox('Select forecast month:',
-                               options = fcast_month_list,
-                               key = 'fcast_month',
-                               index = 0)
+    fcast_tab, overview_tab = st.tabs(['Forecast', 'Transactions Overview'])
     
-    fcast_steps = 4
-    df_sku_demand, sku_demand_dict = main_sku_training(df_trans, month = fcast_month, fcast_steps = fcast_steps)
-    
-    # calculate forecasts for all SKU
+    with fcast_tab:
+        date_today = datetime.today().date()
+        reco_fcast_month = get_fcast_month(date_today)
+        fcast_month_list = np.unique((list(month_series) + [reco_fcast_month]))[::-1]
         
+        month_col, step_col = st.columns(2)
+        with month_col:
+            # select month to forecast
+            fcast_month = st.selectbox('Select forecast month:',
+                                       options = fcast_month_list,
+                                       key = 'fcast_month',
+                                       index = 0)
+        
+        with step_col:
+            # select number of previous months for training
+            fcast_steps = st.selectbox('# of previous months used for training:',
+                                       options = range(2, 13),
+                                       index = 4)
+        
+        # 3. Obtain interval scores and best model of each SKU
+        df_sku_demand, sku_demand_dict = main_sku_training(df_trans, 
+                                                           month = fcast_month, 
+                                                           fcast_steps = fcast_steps)
+        
+        # calculate forecasts for all SKU
+        # sku_fcast_lower_, sku_fcast_upper_ = list(), list()
+        # for sku in df_sku_demand.index:
+        #     sku_fcast_lower, sku_fcast_upper = overall_sku_forecast(sku, df_trans, 
+        #                                                             sku_demand_dict[sku],
+        #                                                             month = fcast_month)
+        #     sku_fcast_lower_.append(sku_fcast_lower)
+        #     sku_fcast_upper_.append(sku_fcast_upper)
+        
+        
+        ## calendar adjustment (removal of dependence on # of days in month)
+        #monthly_daily_avg_qty = pd.Series(monthly_total_qty.values/monthly_days.values)
+        #monthly_daily_avg_qty.index = monthly_total_qty.index
     
-    
-    ## calendar adjustment (removal of dependence on # of days in month)
-    #monthly_daily_avg_qty = pd.Series(monthly_total_qty.values/monthly_days.values)
-    #monthly_daily_avg_qty.index = monthly_total_qty.index
-
-    # show forecast for overall quantity trend
-    # toggle setting to show underlying different model forecast results
-    # default show only best forecast results
-    
-    st.header('Monthly Gulong Overall Demand Forecast')
-    main_overall_forecast(df_trans, month = fcast_month, fcast_steps = fcast_steps)
-    
-    st.header('Monthly Gulong SKU Demand Forecast')
-    
-    # filter by make, dimensions
-    col1, col2 = st.columns(2)
-    with col1:
-        make_select = st.selectbox('MAKE: ',
-                                   options = sorted(df_sku_demand.make.unique()),
-                                   index = 0)
-    with col2:
-        make_filtered = df_sku_demand[df_sku_demand.make == make_select]
-        dim_select = st.selectbox('DIMENSIONS: ',
-                                  options = sorted(make_filtered.dimensions.unique()),
+        # show forecast for overall quantity trend
+        # toggle setting to show underlying different model forecast results
+        # default show only best forecast results
+        
+        st.header('Monthly Gulong Overall Demand Forecast')
+        main_overall_forecast(df_trans, month = fcast_month, fcast_steps = fcast_steps)
+        
+        st.header('Monthly Gulong SKU Demand Forecast')
+        
+        # filter by make, dimensions
+        col1, col2 = st.columns(2)
+        with col1:
+            # ARIVO
+            make_select = st.selectbox('MAKE: ',
+                                       options = sorted(df_sku_demand.make.unique()),
+                                       index = 1)
+        with col2:
+            # default
+            make_filtered = df_sku_demand[df_sku_demand.make == make_select]
+            dim_select = st.selectbox('DIMENSIONS: ',
+                                      options = sorted(make_filtered.dimensions.unique()),
+                                      index = 8)
+        
+        dim_filtered = make_filtered[make_filtered.dimensions == dim_select]
+        SKU_select = st.selectbox('Filtered SKUs: ',
+                                  options = sorted(list(dim_filtered.index)),
                                   index = 0)
-    
-    dim_filtered = make_filtered[make_filtered.dimensions == dim_select]
-    SKU_select = st.selectbox('Filtered SKUs: ',
-                              options = sorted(list(dim_filtered.index)),
-                              index = 0)
-    
-    # summary of SKU with most forecasted increase/decrease
-    main_sku_forecast(SKU_select, df_trans, sku_demand_dict[SKU_select], month = fcast_month)
-
-    # add overall_sku_total forecasts to plot
-    # add sku_forecast statistics
+        
+        
+        main_sku_forecast(SKU_select, df_trans, sku_demand_dict[SKU_select], month = fcast_month)
+        
+        # summary of SKU with most forecasted increase/decrease
+        # add overall_sku_total forecasts to plot
+        # add sku_forecast statistics
+    with overview_tab:
+        st.header('Brand Market Share %')
+        brand_market_share = (df_trans.groupby(['year-month', 'make'])['quantity'].sum()*100\
+                              /df_trans.groupby(['year-month'])['quantity'].sum()).reset_index()
+        brand_market_share.columns = ['year-month', 'make', 'percentage']
+        brand_market_share.loc[:,'quantity'] = df_trans.groupby(['year-month', 'make'])['quantity'].sum().reset_index()['quantity']
+        
+        fig_make = px.bar(brand_market_share, 
+                     x = 'year-month', 
+                     y = 'quantity',
+                     color = 'make',
+                     text = brand_market_share['percentage'].apply(lambda x: '{0:1.2f}%'.format(x)))
+        st.plotly_chart(fig_make)
+        
+        st.header('Dimensions Market Share %')
+        dims_market_share = (df_trans.groupby(['year-month', 'dimensions'])['quantity'].sum()*100\
+                              /df_trans.groupby(['year-month'])['quantity'].sum()).reset_index()
+        dims_market_share.columns = ['year-month', 'dimensions', 'percentage']
+        dims_market_share.loc[:,'quantity'] = df_trans.groupby(['year-month', 'dimensions'])['quantity'].sum().reset_index()['quantity']
+        
+        fig_dims = px.bar(dims_market_share, 
+                      x = 'year-month', 
+                      y = 'quantity',
+                      color = 'dimensions',
+                      text = dims_market_share['percentage'].apply(lambda x: '{0:1.2f}%'.format(x)))
+        st.plotly_chart(fig_dims)
+        
+        st.header('Models by Gross Income')
+        models_GI_option = st.selectbox('Month to View',
+                     options = ['All-time'] + list(df_trans['year-month'].unique()),
+                     index = 0)
+        
+        if models_GI_option == 'All-time':
+            models_gross_income = df_trans.groupby('model')[['cost', 'quantity']]\
+                .sum().sort_values('cost', ascending = False)
+        
+        else:
+            models_gross_income = df_trans[df_trans['year-month'] == models_GI_option]\
+                .groupby('model')[['cost', 'quantity']].sum()\
+                .sort_values('cost', ascending = False)
+        
+        fig_gross_income = px.bar(models_gross_income.reset_index().head(20), y = 'model', x = 'cost')
+        st.plotly_chart(fig_gross_income)
+        
+        # demand fluctuation with price
+        st.header('SKU Demand Fluctuation with price')
+        sku_ = st.selectbox('Select SKU',
+                            options = df_trans.model.value_counts().index,
+                            index = 0)
+        
+        sku_demand_fluct = df_trans[df_trans.model == sku_][['date', 'quantity', 'price']]
+        
+        fig_demand_fluct = make_subplots(specs=[[{"secondary_y": True}]])
+        
+        fig_demand_fluct.add_trace(go.Scatter(x = sku_demand_fluct['date'],
+                                 y = sku_demand_fluct['price'].diff().bfill(0),
+                                 name = 'Price Difference',
+                                 mode = 'lines+markers'),
+                                 secondary_y = False)
+        fig_demand_fluct.add_trace(go.Bar(x = sku_demand_fluct['date'],
+                                          y = sku_demand_fluct['quantity'],
+                                          name = 'Demand'),
+                                   secondary_y = True)
+        
+        st.plotly_chart(fig_demand_fluct)
+        # check regular purchases
+        # check optimal price
+        # check price elasticity
