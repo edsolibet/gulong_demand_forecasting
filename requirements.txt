@@ -4,8 +4,6 @@ requests
 matplotlib
 plotly
 seaborn
-xgboost
-prophet
 scikit-learn
 streamlit-aggrid
 numpy
