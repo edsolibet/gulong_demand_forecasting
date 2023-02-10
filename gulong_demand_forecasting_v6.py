@@ -26,9 +26,6 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 from statsmodels.tsa.holtwinters import Holt
 
-from xgboost import XGBClassifier, XGBRegressor
-from prophet import Prophet
-
 # streamlit
 import streamlit as st
 #from st_aggrid import GridOptionsBuilder, AgGrid
@@ -38,7 +35,7 @@ warnings.filterwarnings(action='ignore', category=UserWarning)
 warnings.filterwarnings(action='ignore', category=FutureWarning)
 #warnings.filterwarnings(action='ignore', category=ValueWarning)
 
-@st.cache_data
+@st.experimental_memo
 def import_data():
     '''
     Wrapper function for importing data from redash so that caching can be applied.
@@ -48,7 +45,7 @@ def import_data():
     df_traffic = import_gulong_traffic()
     return df_trans, df_traffic
 
-@st.cache_data
+@st.experimental_memo
 def get_fcast_month(date_today):
     '''
     Returns the month to be forecasted based on current day
@@ -363,7 +360,7 @@ def eval_model_forecast(data, fcast_steps = 4, month = None, alpha = 80):
     df_interval_score['avg_interval_score'] = df_interval_score.apply(lambda x: weighted_average(x), axis=1)
     return df_RMSE, df_pred, df_interval_score
 
-@st.cache_data
+@st.experimental_memo
 def main_sku_training(data, month = None, fcast_steps = 6):
     '''
     Model training and selection based on one-step forecasting for each SKU
@@ -530,7 +527,7 @@ def model_forecast(data, model, month = None, alpha = 80):
     
     return pred_lower, pred_upper
 
-@st.cache_data
+@st.experimental_memo
 def overall_sku_forecast(sku, data, sku_dict, month = None):
     '''
     Calculate overall monthly forecast from total SKU forecasts
@@ -597,7 +594,7 @@ def color_coding(row, best):
     return ['background-color:green'] * len(
         row) if row['index'] == best else ['background-color:white'] * len(row)
 
-@st.cache_data
+@st.experimental_memo
 def main_overall_forecast(data, month = None, fcast_steps = 6):
     '''
     
@@ -682,7 +679,7 @@ def main_overall_forecast(data, month = None, fcast_steps = 6):
         
 
     
-@st.cache_data
+@st.experimental_memo
 def main_sku_forecast(sku, data, sku_dict, month = None):
     if month is not None:
         if month in data['year-month'].unique():
@@ -757,7 +754,7 @@ def main_sku_forecast(sku, data, sku_dict, month = None):
         st.dataframe(sku_dict['df_interval_score'].fillna(0).reset_index())
     
 
-@st.cache_data
+@st.experimental_memo
 def main_forecast(data, model_dict, month = None):
     '''
     One-step forecasting for each SKU
@@ -809,7 +806,7 @@ def main_forecast(data, model_dict, month = None):
     return monthly_sku_forecast
 
 
-@st.cache_data
+@st.experimental_memo
 def target_setting(data, target, month = None, fcast_steps = 6):
     '''
     
