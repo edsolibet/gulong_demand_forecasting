@@ -748,8 +748,8 @@ def main_sku_forecast(sku, data, sku_dict, month = None):
     with st.expander('Forecast details'):
         
         st.info('Forecast interval scores')
-        st.dataframe(sku_dict['df_interval_score'].fillna(0).reset_index().style\
-                      .apply(lambda x: color_coding(x, sku_dict['best_model']), axis=1))
+        # st.dataframe(sku_dict['df_interval_score'].fillna(0).reset_index().style\
+        #               .apply(lambda x: color_coding(x, sku_dict['best_model']), axis=1))
         
         # st.dataframe(sku_dict['df_interval_score'].fillna(0).reset_index())
     
@@ -884,8 +884,8 @@ def target_setting(data, target, month = None, fcast_steps = 6):
     with st.expander('Forecast details'):
         
         st.info('Forecast interval scores')
-        st.dataframe(df_interval_score.fillna(0).reset_index().style.\
-                      apply(lambda x: color_coding(x, best_model), axis=1))
+        # st.dataframe(df_interval_score.fillna(0).reset_index().style.\
+        #               apply(lambda x: color_coding(x, best_model), axis=1))
 
 ## =========================== main flow ======================================
 if __name__ == '__main__':
