@@ -675,8 +675,9 @@ def main_overall_forecast(data, month = None, fcast_steps = 6):
     with st.expander('Forecast details'):
         
         st.info('Forecast interval scores')
-        st.dataframe(df_interval_score.fillna(0).reset_index().style.\
-                      apply(lambda x: color_coding(x, best_model), axis=1))
+        st.dataframe(df_interval_score.fillna(0).reset_index())
+        # st.dataframe(df_interval_score.fillna(0).reset_index().style.\
+        #               apply(lambda x: color_coding(x, best_model), axis=1))
         # reference: https://stackoverflow.com/questions/73940163/highlighting-specific-rows-in-streamlit-dataframe
         
 
@@ -750,10 +751,10 @@ def main_sku_forecast(sku, data, sku_dict, month = None):
     with st.expander('Forecast details'):
         
         st.info('Forecast interval scores')
-        st.dataframe(sku_dict['df_interval_score'].fillna(0).reset_index().style\
-                      .apply(lambda x: color_coding(x, sku_dict['best_model']), axis=1))
+        # st.dataframe(sku_dict['df_interval_score'].fillna(0).reset_index().style\
+        #               .apply(lambda x: color_coding(x, sku_dict['best_model']), axis=1))
         # reference: https://stackoverflow.com/questions/73940163/highlighting-specific-rows-in-streamlit-dataframe
-        # st.dataframe(sku_dict['df_interval_score'].fillna(0))
+        st.dataframe(sku_dict['df_interval_score'].fillna(0).reset_index())
     
 
 @st.cache_data
