@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 
 # for importing data
-from import_data_redash import import_txn_data, import_traffic_data
+from import_gulong_redash import import_gulong_txn, import_gulong_traffic
 
 # handling dates
 import datetime as dt
@@ -43,8 +43,9 @@ def import_data():
     '''
     Wrapper function for importing data from redash so that caching can be applied.
     '''
-    df_trans = import_txn_data()
-    df_traffic = import_traffic_data()
+    df_trans = import_gulong_txn()
+    df_trans = df_trans.rename(columns = {'cost' : 'sales'})
+    df_traffic = import_gulong_traffic()
     return df_trans, df_traffic
 
 @st.experimental_memo
@@ -678,7 +679,7 @@ def main_overall_forecast(data, month = None, fcast_steps = 6):
                       apply(lambda x: color_coding(x, best_model), axis=1))
         # reference: https://stackoverflow.com/questions/73940163/highlighting-specific-rows-in-streamlit-dataframe
         
-    
+
     
 @st.experimental_memo
 def main_sku_forecast(sku, data, sku_dict, month = None):
@@ -807,7 +808,87 @@ def main_forecast(data, model_dict, month = None):
     return monthly_sku_forecast
 
 
+@st.experimental_memo
+def target_setting(data, target, month = None, fcast_steps = 6):
+    '''
     
+    Parameters
+    ----------
+    data : dataframe
+        df_trans from import_data
+    
+    '''
+    
+    if month is not None:
+        if month in data['year-month'].unique():
+            month_format = data.groupby('year-month')[target].sum().loc[:month].iloc[:-1]
+        else:
+            month_format = data.groupby('year-month')[target].sum().loc[:month]
+    else:
+        month_format = data.groupby('year-month')[target].sum()
+    
+    # evaluate predictions of different models
+    df_RMSE, df_pred, df_interval_score = eval_model_forecast(month_format, fcast_steps = fcast_steps, month = month)
+    # get model with best interval score
+    # leave out columns
+    min_int_score = df_interval_score['avg_interval_score'].iloc[1:].min()
+    
+    df_interval_score.columns = list(month_format.iloc[-fcast_steps:].index) + ['avg_interval_score']
+    # get best model based on interval score (disregarding true)
+    best_model = df_interval_score.iloc[1:][df_interval_score['avg_interval_score'].iloc[1:] == min_int_score].index[0]
+    fcast = model_forecast(month_format, best_model, month = month)
+    
+    # main data
+    fig_1 = go.Figure(data = go_scat(name = 'monthly_overall',
+                                        x = month_format.index,
+                                        y = month_format.values,
+                                        c = '#36454F',
+                                        dash = 'solid'))
+    # lower limit
+    lower_lim_cols = [col for col in df_pred.columns if 'lower' in col]
+    y_lower = df_pred.loc[best_model, lower_lim_cols].tolist() + [fcast[0]]
+    x_lower = list(month_format.iloc[-fcast_steps:].index) + [fcast_month]
+    fig_1.add_trace(go_scat(name = 'lower_pred',
+                                   x = x_lower,
+                                   y = y_lower,
+                                   c = '#FF0000',
+                                   dash = 'solid'))
+    
+    # upper limit
+    upper_lim_cols = [col for col in df_pred.columns if 'upper' in col]
+    y_upper = df_pred.loc[best_model, upper_lim_cols].tolist() + [fcast[1]]
+    x_upper = list(month_format.iloc[-fcast_steps:].index) + [fcast_month]
+    fig_1.add_trace(go_scat(name = 'upper_pred',
+                                   x = x_upper,
+                                   y = y_upper,
+                                   c = '#008000',
+                                   dash = 'solid'))
+    
+    # 6-month
+    train_6mo, fcast_6mo = linear_forecast(month_format.iloc[-6:])
+    fig_1.add_trace(go_scat(name = '6 mo. linear fit',
+                                   x = list(month_format.index[-6:]) + [fcast_month],
+                                   y = list(train_6mo) + [fcast_6mo[0]],
+                                   c = '#0F52BA',
+                                   dash = 'dash'))
+    
+    # 1-year polynomial fit
+    train_1y, fcast_1y = linear_forecast(month_format.iloc[-12:])
+    fig_1.add_trace(go_scat(name = '1 yr. linear fit',
+                                   x = list(month_format.index[-12:]) + [fcast_month],
+                                   y = list(train_1y) + [fcast_1y[0]],
+                                   c = '#7393B3',
+                                   dash = 'dash'))
+    
+    #fig_1.update_layout()
+    st.plotly_chart(fig_1, use_container_width = True)
+    
+    with st.expander('Forecast details'):
+        
+        st.info('Forecast interval scores')
+        st.dataframe(df_interval_score.fillna(0).reset_index().style.\
+                      apply(lambda x: color_coding(x, best_model), axis=1))
+        # reference: https://stackoverflow.com/questions/73940163/highlighting-specific-rows-in-streamlit-dataframe  
 
 ## =========================== main flow ======================================
 if __name__ == '__main__':
@@ -824,7 +905,8 @@ if __name__ == '__main__':
     ## monthly_index
     monthly_days.index = month_series
     
-    fcast_tab, overview_tab = st.tabs(['Forecast', 'Transactions Overview'])
+    fcast_tab, overview_tab, target_tab = st.tabs(['Forecast', 'Transactions Overview',
+                                                   'Target Setting'])
     
     with fcast_tab:
         date_today = datetime.today().date()
@@ -931,15 +1013,15 @@ if __name__ == '__main__':
                      index = 0)
         
         if models_GI_option == 'All-time':
-            models_gross_income = df_trans.groupby('model')[['cost', 'quantity']]\
-                .sum().sort_values('cost', ascending = False)
+            models_gross_income = df_trans.groupby('model')[['sales', 'quantity']]\
+                .sum().sort_values('sales', ascending = False)
         
         else:
             models_gross_income = df_trans[df_trans['year-month'] == models_GI_option]\
-                .groupby('model')[['cost', 'quantity']].sum()\
-                .sort_values('cost', ascending = False)
+                .groupby('model')[['sales', 'quantity']].sum()\
+                .sort_values('sales', ascending = False)
         
-        fig_gross_income = px.bar(models_gross_income.reset_index().head(20), y = 'model', x = 'cost')
+        fig_gross_income = px.bar(models_gross_income.reset_index().head(20), y = 'model', x = 'sales')
         st.plotly_chart(fig_gross_income)
         
         # demand fluctuation with price
@@ -963,6 +1045,19 @@ if __name__ == '__main__':
                                    secondary_y = True)
         
         st.plotly_chart(fig_demand_fluct)
+    
+    with target_tab:
+        target_select = st.selectbox('Target to forecast',
+                                     options = ['sales', 'sessions'],
+                                     index = 0)
+        if target_select in df_trans.columns:
+            target_data = df_trans
+        elif target_select in df_traffic.columns:
+            target_data = df_traffic
+        else:
+            raise Exception('Target is not found.')
+            
+        target_setting(target_data, target_select, month = fcast_month, fcast_steps = 6)
         # check regular purchases
         # check optimal price
         # check price elasticity
