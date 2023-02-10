@@ -130,7 +130,7 @@ def combine_specs(row):
     else:
         return '/'.join([str(row['width']), str(row['aspect_ratio']), str(row['diameter'])])
 
-@st.experimental_memo
+@st.cache_data
 def import_gulong_txn():
     '''
     IMPORT DATA FROM REDASH QUERY FOR GULONG
@@ -178,7 +178,7 @@ def ratio(a, b):
     '''
     return a/b if b else 0 
 
-@st.experimental_memo
+@st.cache_data
 def import_gulong_traffic():
     
     # Website/Traffic ads
